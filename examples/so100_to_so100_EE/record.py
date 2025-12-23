@@ -16,6 +16,8 @@
 
 
 from lerobot.cameras.opencv.configuration_opencv import OpenCVCameraConfig
+# 新增一个realsense相机配置
+from lerobot.cameras.realsense.configuration_realsense import RealSenseCameraConfig
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.datasets.pipeline_features import aggregate_pipeline_dataset_features, create_initial_features
 from lerobot.datasets.utils import combine_feature_dicts
@@ -39,26 +41,37 @@ from lerobot.teleoperators.so100_leader.config_so100_leader import SO100LeaderCo
 from lerobot.teleoperators.so100_leader.so100_leader import SO100Leader
 from lerobot.utils.control_utils import init_keyboard_listener
 from lerobot.utils.utils import log_say
-from lerobot.utils.visualization_utils import init_rerun
+# from lerobot.utils.visualization_utils import init_rerun
 
-NUM_EPISODES = 2
+NUM_EPISODES = 1
 FPS = 30
 EPISODE_TIME_SEC = 60
-RESET_TIME_SEC = 30
-TASK_DESCRIPTION = "My task description"
-HF_REPO_ID = "<hf_username>/<dataset_repo_id>"
-
-
+RESET_TIME_SEC = 2
+TASK_DESCRIPTION = "pick up the yellow sachet and place it into the box."
+# init_rerun(session_name="recording_phone")
+HF_REPO_ID = "test_one/ee"
 def main():
-    # Create the robot and teleoperator configurations
-    camera_config = {"front": OpenCVCameraConfig(index_or_path=0, width=640, height=480, fps=FPS)}
+    # 摄像头配置
+    camera_config = {
+        "wrist": OpenCVCameraConfig(index_or_path=0, width=640, height=480, fps=FPS),
+        # 如果以后要加 side 摄像头可以在这里添加
+        "side": RealSenseCameraConfig(serial_number_or_name="806312060427", width=640, height=480, fps=FPS, use_depth=False)
+    }
+
+    # 机器人配置
     follower_config = SO100FollowerConfig(
-        port="/dev/tty.usbmodem5A460814411",
-        id="my_awesome_follower_arm",
+        port="/dev/ttyACM0",  # 对应 YAML 的 follower port
+        id="foree_follower",           # YAML 中 follower id
         cameras=camera_config,
-        use_degrees=True,
+        use_degrees=True
     )
-    leader_config = SO100LeaderConfig(port="/dev/tty.usbmodem5A460819811", id="my_awesome_leader_arm")
+
+    # 遥操作臂配置
+    leader_config = SO100LeaderConfig(
+        port="/dev/ttyACM1",  # 对应 YAML 的 teleop port
+        id="foree_leader",             # YAML 中 teleop id
+        # use_degrees=True
+    )
 
     # Initialize the robot and teleoperator
     follower = SO100Follower(follower_config)
@@ -66,14 +79,14 @@ def main():
 
     # NOTE: It is highly recommended to use the urdf in the SO-ARM100 repo: https://github.com/TheRobotStudio/SO-ARM100/blob/main/Simulation/SO101/so101_new_calib.urdf
     follower_kinematics_solver = RobotKinematics(
-        urdf_path="./SO101/so101_new_calib.urdf",
+        urdf_path="SO-ARM100/Simulation/SO101/so101_new_calib.urdf",
         target_frame_name="gripper_frame_link",
         joint_names=list(follower.bus.motors.keys()),
     )
 
     # NOTE: It is highly recommended to use the urdf in the SO-ARM100 repo: https://github.com/TheRobotStudio/SO-ARM100/blob/main/Simulation/SO101/so101_new_calib.urdf
     leader_kinematics_solver = RobotKinematics(
-        urdf_path="./SO101/so101_new_calib.urdf",
+        urdf_path="SO-ARM100/Simulation/SO101/so101_new_calib.urdf",
         target_frame_name="gripper_frame_link",
         joint_names=list(leader.bus.motors.keys()),
     )
@@ -117,11 +130,9 @@ def main():
         to_output=transition_to_robot_action,
     )
 
-    # Create the dataset
-    dataset = LeRobotDataset.create(
-        repo_id=HF_REPO_ID,
-        fps=FPS,
-        features=combine_feature_dicts(
+
+    # feature的处理
+    new_features=combine_feature_dicts(
             # Run the feature contract of the pipelines
             # This tells you how the features would look like after the pipeline steps
             aggregate_pipeline_dataset_features(
@@ -134,7 +145,40 @@ def main():
                 initial_features=create_initial_features(observation=follower.observation_features),
                 use_videos=True,
             ),
-        ),
+        )
+    # 增加两个feature
+    new_features["joint_action"] = {
+        "dtype": "float32",
+        "shape": (6,),
+        "names": ["shoulder_pan.pos",
+                    "shoulder_lift.pos",
+                    "elbow_flex.pos",
+                    "wrist_flex.pos",
+                    "wrist_roll.pos",
+                    "gripper.pos"
+                ],
+        # "names": ["ee.x", "ee.y", "ee.z", "ee.wx", "ee.wy", "ee.wz", "ee.gripper_pos"],
+    }
+
+    # observation.state_ee
+    new_features["observation.joint_state"] = {
+        "dtype": "float32",
+        "shape": (6,),
+        "names": [
+                    "shoulder_pan.pos",
+                    "shoulder_lift.pos",
+                    "elbow_flex.pos",
+                    "wrist_flex.pos",
+                    "wrist_roll.pos",
+                    "gripper.pos"
+                ],
+    }
+
+    # Create the dataset
+    dataset = LeRobotDataset.create(
+        repo_id=HF_REPO_ID,
+        fps=FPS,
+        features=new_features,
         robot_type=follower.name,
         use_videos=True,
         image_writer_threads=4,
@@ -146,7 +190,7 @@ def main():
 
     # Initialize the keyboard listener and rerun visualization
     listener, events = init_keyboard_listener()
-    init_rerun(session_name="recording_phone")
+    # init_rerun(session_name="recording_phone")
 
     if not leader.is_connected or not follower.is_connected:
         raise ValueError("Robot or teleop is not connected!")
@@ -205,7 +249,7 @@ def main():
     listener.stop()
 
     dataset.finalize()
-    dataset.push_to_hub()
+    # dataset.push_to_hub()
 
 
 if __name__ == "__main__":

@@ -93,11 +93,9 @@ from lerobot.robots import (  # noqa: F401
     Robot,
     RobotConfig,
     bi_so100_follower,
-    earthrover_mini_plus,
     hope_jr,
     koch_follower,
     make_robot_from_config,
-    omx_follower,
     so100_follower,
     so101_follower,
 )
@@ -108,10 +106,10 @@ from lerobot.teleoperators import (  # noqa: F401
     homunculus,
     koch_leader,
     make_teleoperator_from_config,
-    omx_leader,
     so100_leader,
     so101_leader,
 )
+import numpy as np
 from lerobot.teleoperators.keyboard.teleop_keyboard import KeyboardTeleop
 from lerobot.utils.constants import ACTION, OBS_STR
 from lerobot.utils.control_utils import (
@@ -121,15 +119,43 @@ from lerobot.utils.control_utils import (
     sanity_check_dataset_name,
     sanity_check_dataset_robot_compatibility,
 )
-from lerobot.utils.import_utils import register_third_party_plugins
-from lerobot.utils.robot_utils import precise_sleep
+from lerobot.utils.import_utils import register_third_party_devices
+from lerobot.utils.robot_utils import busy_wait
 from lerobot.utils.utils import (
     get_safe_torch_device,
     init_logging,
     log_say,
 )
 from lerobot.utils.visualization_utils import init_rerun, log_rerun_data
+import cv2
 
+import json
+
+# 保存动作数据的文件路径
+action_file_path = "robot_actions.json"
+
+# 假设 robot_action_to_send 是一个 dict，比如：
+# {"shoulder_pan.pos": 0.1, "shoulder_lift.pos": 0.2, ...}
+
+# 如果你希望保存多个动作，按顺序追加
+def save_action_to_file(action_dict: dict, file_path: str = action_file_path):
+    try:
+        # 读取已有的动作列表
+        try:
+            with open(file_path, "r") as f:
+                actions_list = json.load(f)
+        except FileNotFoundError:
+            actions_list = []
+
+        # 添加新动作
+        actions_list.append(action_dict)
+
+        # 保存回文件
+        with open(file_path, "w") as f:
+            json.dump(actions_list, f, indent=2)
+
+    except Exception as e:
+        print(f"Error saving action: {e}")
 
 @dataclass
 class DatasetRecordConfig:
@@ -237,6 +263,32 @@ class RecordConfig:
 """
 
 
+import matplotlib.pyplot as plt
+
+def plot_recorded_actions( actions, joint_states):
+    if not actions:  # 防止为空
+        print("No actions recorded.")
+        return
+
+    keys = list(actions[0].keys())
+    n = len(keys)
+    fig, axes = plt.subplots(n, 1, figsize=(12, 3*n), sharex=True)
+    x = list(range(len(actions)))
+
+    for i, key in enumerate(keys):
+        ax = axes[i]
+        y_action = [a[key] for a in actions]
+        y_joint = [s[key] for s in joint_states]
+        ax.plot(x, y_action, label='performed_action')
+        ax.plot(x, y_joint, label='joint_state', linestyle='--')
+        ax.set_ylabel(key)
+        ax.legend()
+
+    plt.xlabel('Time (s)')
+    plt.show(block=True)
+
+
+firsttime=False
 @safe_stop_image_writer
 def record_loop(
     robot: Robot,
@@ -260,6 +312,14 @@ def record_loop(
     single_task: str | None = None,
     display_data: bool = False,
 ):
+    
+
+    # 用于记录时间戳、动作和关节状态
+    logged_timestamps: list[float] = []
+    logged_actions: list[dict[str, float]] = []
+    logged_joint_states: list[dict[str, float]] = []
+
+
     if dataset is not None and dataset.fps != fps:
         raise ValueError(f"The dataset fps should be equal to requested fps ({dataset.fps} != {fps}).")
 
@@ -272,12 +332,7 @@ def record_loop(
                 for t in teleop
                 if isinstance(
                     t,
-                    (
-                        so100_leader.SO100Leader
-                        | so101_leader.SO101Leader
-                        | koch_leader.KochLeader
-                        | omx_leader.OmxLeader
-                    ),
+                    (so100_leader.SO100Leader | so101_leader.SO101Leader | koch_leader.KochLeader),
                 )
             ),
             None,
@@ -293,7 +348,7 @@ def record_loop(
         policy.reset()
         preprocessor.reset()
         postprocessor.reset()
-        # 新增的，这三个是默认
+    # 新增的，这三个是默认
     identity_teleop_action_processor, identity_robot_action_processor, identity_robot_observation_processor = make_default_processors()
 
     timestamp = 0
@@ -306,9 +361,28 @@ def record_loop(
             break
 
         # Get robot observation
+        # obs = robot.get_observation()
+
+
+        # 1. 先加载之前计算好的单应性矩阵 H
+        # H = np.load("homography.npy")  # shape (3,3)
+
+        # 2. 假设你在循环里获取obs后，直接对camera1的图像做变换
         obs = robot.get_observation()
+        # 测试：代码的值留下来给服务器试试
+        # import pickle
+        # with open("obs.pkl", "wb") as f:
+        #     pickle.dump(obs, f)
+
+        # if "side" in obs:
+        #     img = obs["side"]  # 这里 img 是 numpy array 格式
+        #     h, w = img.shape[:2]
+        #     # 将新位置图像映射到旧位置视角
+        #     warped_img = cv2.warpPerspective(img, H, (w, h))
+        #     obs["side"] = warped_img  # 覆盖原来的图像
 
         # Applies a pipeline to the raw robot observation, default is IdentityProcessor
+        # 只是用来存储的
         obs_processed = robot_observation_processor(obs)
         # 额外增加state_joint
         joint_keys = [
@@ -319,13 +393,19 @@ def record_loop(
             "wrist_roll.pos",
             "gripper.pos",
         ]
+
+        # 将 obs 中的关节角数据注入 obs_processed
+        # 只是为了保存，不加也没啥问题？
+        # TODO
         for key in joint_keys:
             if key in obs:  # 确保obs中有这个值
                 obs_processed[key] = obs[key]
+
         if policy is not None or dataset is not None:
             observation_frame = build_dataset_frame(dataset.features, obs_processed, prefix=OBS_STR)
 
         # Get action from either policy or teleop
+        # preprocessor和postprocessor这些处理器通过 PolicyProcessorPipeline 组合使用，实现数据格式转换、归一化、设备迁移等功能，确保策略能正确处理机器人观测数据并输出有效动作
         if policy is not None and preprocessor is not None and postprocessor is not None:
             action_values = predict_action(
                 observation=observation_frame,
@@ -341,6 +421,7 @@ def record_loop(
             act_processed_policy: RobotAction = make_robot_action(action_values, dataset.features)
 
         elif policy is None and isinstance(teleop, Teleoperator):
+            # 原始act
             act = teleop.get_action()
 
             # Applies a pipeline to the raw teleop action, default is IdentityProcessor
@@ -363,6 +444,22 @@ def record_loop(
             continue
 
         # Applies a pipeline to the action, default is IdentityProcessor
+        global firsttime
+        if not firsttime:
+            obs= {
+                "shoulder_pan.pos": -10.417582417582418,
+                "shoulder_lift.pos": -89.8021978021978,
+                "elbow_flex.pos": 95.47252747252747,
+                "wrist_flex.pos": 37.67032967032967,
+                "wrist_roll.pos": 0.7472527472527473,
+                "gripper.pos": 8.651597817614965
+            }
+            # print("初始的state是？",obs)
+            firsttime=True
+        else:
+            obs=robot.get_only_state_obs()
+        # print("获得obs的时间",time.perf_counter())
+
         if policy is not None and act_processed_policy is not None:
             action_values = act_processed_policy
             robot_action_to_send = robot_action_processor((act_processed_policy, obs))
@@ -373,28 +470,40 @@ def record_loop(
         # Send action to robot
         # Action can eventually be clipped using `max_relative_target`,
         # so action actually sent is saved in the dataset. action = postprocessor.process(action)
+        # print("手动修改",robot_action_to_send)
         # TODO(steven, pepijn, adil): we should use a pipeline step to clip the action, so the sent action is the action that we input to the robot.
+        # print(f"ee-action={act_processed_policy},观察的obs:shoulder_pan.pos={obs['shoulder_pan.pos']},shoulder_lift.pos={obs['shoulder_lift.pos']},elbow_flex.pos={obs['elbow_flex.pos']},wrist_flex.pos={obs['wrist_flex.pos']},wrist_roll.pos={obs['wrist_roll.pos']},gripper={obs['gripper.pos']},当前的joint_action{robot_action_to_send}")
+        print("ee-x是",act_processed_policy["ee.x"],"当前state是",obs["shoulder_pan.pos"],"要求的action",robot_action_to_send["shoulder_pan.pos"])
         _sent_action = robot.send_action(robot_action_to_send)
-
+        logged_joint_states.append(obs)
+        logged_actions.append(_sent_action) 
+        save_action_to_file(robot_action_to_send)
+        # print("发送的时间是",time.perf_counter())
+        
+        # 新增 state_joint
         # Write to dataset
-        if dataset is not None:
-            action_joint_frame = build_dataset_frame(
-                dataset.features, 
-                act_not_processed_teleop,                  # teleop 原始 joints
-                prefix="joint_action" # 因为utils里面这么写的if key in DEFAULT_FEATURES or not key.startswith(prefix):，所以不能用action_joint
-            )
-            action_frame = build_dataset_frame(dataset.features, action_values, prefix=ACTION)
-            # frame = {**observation_frame, **action_frame, "task": single_task}
-            frame = {**observation_frame,**action_joint_frame, **action_frame, "task": single_task}
-            dataset.add_frame(frame)
+        # if dataset is not None:
+        #     # action_joint_frame = build_dataset_frame(
+        #     #     dataset.features, 
+        #     #     act_not_processed_teleop,                  # teleop 原始 joints
+        #     #     prefix="joint_action" # 因为utils里面这么写的if key in DEFAULT_FEATURES or not key.startswith(prefix):，所以不能用action_joint
+        #     # )
+        #     action_frame = build_dataset_frame(dataset.features, action_values, prefix=ACTION)
+        #     # frame = {**observation_frame,**action_joint_frame, **action_frame, "task": single_task}
+        #     frame = {**observation_frame, **action_frame, "task": single_task}
+        #     dataset.add_frame(frame)
 
-        if display_data:
-            log_rerun_data(observation=obs_processed, action=action_values)
+        # if display_data:
+        #     log_rerun_data(observation=obs_processed, action=action_values)
 
         dt_s = time.perf_counter() - start_loop_t
-        precise_sleep(1 / fps - dt_s)
+        # busy_wait(1 / fps - dt_s)
+        busy_wait(1 / fps - dt_s)
+        print("等了",0.03 - dt_s,robot.get_only_state_obs())
 
         timestamp = time.perf_counter() - start_episode_t
+    plot_recorded_actions(logged_actions, logged_joint_states)
+
 
 
 @parser.wrap()
@@ -424,63 +533,82 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
         ),
     )
 
-    dataset = None
-    listener = None
+    if cfg.resume:
+        dataset = LeRobotDataset(
+            cfg.dataset.repo_id,
+            root=cfg.dataset.root,
+            batch_encoding_size=cfg.dataset.video_encoding_batch_size,
+        )
 
-    try:
-        if cfg.resume:
-            dataset = LeRobotDataset(
-                cfg.dataset.repo_id,
-                root=cfg.dataset.root,
-                batch_encoding_size=cfg.dataset.video_encoding_batch_size,
+        if hasattr(robot, "cameras") and len(robot.cameras) > 0:
+            dataset.start_image_writer(
+                num_processes=cfg.dataset.num_image_writer_processes,
+                num_threads=cfg.dataset.num_image_writer_threads_per_camera * len(robot.cameras),
+            )
+        sanity_check_dataset_robot_compatibility(dataset, robot, cfg.dataset.fps, dataset_features)
+    else:
+        # Create empty dataset or load existing saved episodes
+        sanity_check_dataset_name(cfg.dataset.repo_id, cfg.policy)
+        dataset = LeRobotDataset.create(
+            cfg.dataset.repo_id,
+            cfg.dataset.fps,
+            root=cfg.dataset.root,
+            robot_type=robot.name,
+            features=dataset_features,
+            use_videos=cfg.dataset.video,
+            image_writer_processes=cfg.dataset.num_image_writer_processes,
+            image_writer_threads=cfg.dataset.num_image_writer_threads_per_camera * len(robot.cameras),
+            batch_encoding_size=cfg.dataset.video_encoding_batch_size,
+        )
+
+    # Load pretrained policy
+    policy = None if cfg.policy is None else make_policy(cfg.policy, ds_meta=dataset.meta)
+    preprocessor = None
+    postprocessor = None
+    if cfg.policy is not None:
+        preprocessor, postprocessor = make_pre_post_processors(
+            policy_cfg=cfg.policy,
+            pretrained_path=cfg.policy.pretrained_path,
+            dataset_stats=rename_stats(dataset.meta.stats, cfg.dataset.rename_map),
+            preprocessor_overrides={
+                "device_processor": {"device": cfg.policy.device},
+                "rename_observations_processor": {"rename_map": cfg.dataset.rename_map},
+            },
+        )
+
+    robot.connect()
+    if teleop is not None:
+        teleop.connect()
+
+    listener, events = init_keyboard_listener()
+
+    with VideoEncodingManager(dataset):
+        recorded_episodes = 0
+        while recorded_episodes < cfg.dataset.num_episodes and not events["stop_recording"]:
+            log_say(f"Recording episode {dataset.num_episodes}", cfg.play_sounds)
+            record_loop(
+                robot=robot,
+                events=events,
+                fps=cfg.dataset.fps,
+                teleop_action_processor=teleop_action_processor,
+                robot_action_processor=robot_action_processor,
+                robot_observation_processor=robot_observation_processor,
+                teleop=teleop,
+                policy=policy,
+                preprocessor=preprocessor,
+                postprocessor=postprocessor,
+                dataset=dataset,
+                control_time_s=cfg.dataset.episode_time_s,
+                single_task=cfg.dataset.single_task,
+                display_data=cfg.display_data,
             )
 
-            if hasattr(robot, "cameras") and len(robot.cameras) > 0:
-                dataset.start_image_writer(
-                    num_processes=cfg.dataset.num_image_writer_processes,
-                    num_threads=cfg.dataset.num_image_writer_threads_per_camera * len(robot.cameras),
-                )
-            sanity_check_dataset_robot_compatibility(dataset, robot, cfg.dataset.fps, dataset_features)
-        else:
-            # Create empty dataset or load existing saved episodes
-            sanity_check_dataset_name(cfg.dataset.repo_id, cfg.policy)
-            dataset = LeRobotDataset.create(
-                cfg.dataset.repo_id,
-                cfg.dataset.fps,
-                root=cfg.dataset.root,
-                robot_type=robot.name,
-                features=dataset_features,
-                use_videos=cfg.dataset.video,
-                image_writer_processes=cfg.dataset.num_image_writer_processes,
-                image_writer_threads=cfg.dataset.num_image_writer_threads_per_camera * len(robot.cameras),
-                batch_encoding_size=cfg.dataset.video_encoding_batch_size,
-            )
-
-        # Load pretrained policy
-        policy = None if cfg.policy is None else make_policy(cfg.policy, ds_meta=dataset.meta)
-        preprocessor = None
-        postprocessor = None
-        if cfg.policy is not None:
-            preprocessor, postprocessor = make_pre_post_processors(
-                policy_cfg=cfg.policy,
-                pretrained_path=cfg.policy.pretrained_path,
-                dataset_stats=rename_stats(dataset.meta.stats, cfg.dataset.rename_map),
-                preprocessor_overrides={
-                    "device_processor": {"device": cfg.policy.device},
-                    "rename_observations_processor": {"rename_map": cfg.dataset.rename_map},
-                },
-            )
-
-        robot.connect()
-        if teleop is not None:
-            teleop.connect()
-
-        listener, events = init_keyboard_listener()
-
-        with VideoEncodingManager(dataset):
-            recorded_episodes = 0
-            while recorded_episodes < cfg.dataset.num_episodes and not events["stop_recording"]:
-                log_say(f"Recording episode {dataset.num_episodes}", cfg.play_sounds)
+            # Execute a few seconds without recording to give time to manually reset the environment
+            # Skip reset for the last episode to be recorded
+            if not events["stop_recording"] and (
+                (recorded_episodes < cfg.dataset.num_episodes - 1) or events["rerecord_episode"]
+            ):
+                log_say("Reset the environment", cfg.play_sounds)
                 record_loop(
                     robot=robot,
                     events=events,
@@ -489,66 +617,39 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
                     robot_action_processor=robot_action_processor,
                     robot_observation_processor=robot_observation_processor,
                     teleop=teleop,
-                    policy=policy,
-                    preprocessor=preprocessor,
-                    postprocessor=postprocessor,
-                    dataset=dataset,
-                    control_time_s=cfg.dataset.episode_time_s,
+                    control_time_s=cfg.dataset.reset_time_s,
                     single_task=cfg.dataset.single_task,
                     display_data=cfg.display_data,
                 )
 
-                # Execute a few seconds without recording to give time to manually reset the environment
-                # Skip reset for the last episode to be recorded
-                if not events["stop_recording"] and (
-                    (recorded_episodes < cfg.dataset.num_episodes - 1) or events["rerecord_episode"]
-                ):
-                    log_say("Reset the environment", cfg.play_sounds)
-                    record_loop(
-                        robot=robot,
-                        events=events,
-                        fps=cfg.dataset.fps,
-                        teleop_action_processor=teleop_action_processor,
-                        robot_action_processor=robot_action_processor,
-                        robot_observation_processor=robot_observation_processor,
-                        teleop=teleop,
-                        control_time_s=cfg.dataset.reset_time_s,
-                        single_task=cfg.dataset.single_task,
-                        display_data=cfg.display_data,
-                    )
+            if events["rerecord_episode"]:
+                log_say("Re-record episode", cfg.play_sounds)
+                events["rerecord_episode"] = False
+                events["exit_early"] = False
+                dataset.clear_episode_buffer()
+                continue
 
-                if events["rerecord_episode"]:
-                    log_say("Re-record episode", cfg.play_sounds)
-                    events["rerecord_episode"] = False
-                    events["exit_early"] = False
-                    dataset.clear_episode_buffer()
-                    continue
+            dataset.save_episode()
+            recorded_episodes += 1
 
-                dataset.save_episode()
-                recorded_episodes += 1
-    finally:
-        log_say("Stop recording", cfg.play_sounds, blocking=True)
+    log_say("Stop recording", cfg.play_sounds, blocking=True)
 
-        if dataset:
-            dataset.finalize()
+    robot.disconnect()
+    if teleop is not None:
+        teleop.disconnect()
 
-        if robot.is_connected:
-            robot.disconnect()
-        if teleop and teleop.is_connected:
-            teleop.disconnect()
+    if not is_headless() and listener is not None:
+        listener.stop()
 
-        if not is_headless() and listener:
-            listener.stop()
+    # if cfg.dataset.push_to_hub:
+    #     dataset.push_to_hub(tags=cfg.dataset.tags, private=cfg.dataset.private)
 
-        if cfg.dataset.push_to_hub:
-            dataset.push_to_hub(tags=cfg.dataset.tags, private=cfg.dataset.private)
-
-        log_say("Exiting", cfg.play_sounds)
+    log_say("Exiting", cfg.play_sounds)
     return dataset
 
 
 def main():
-    register_third_party_plugins()
+    register_third_party_devices()
     record()
 
 

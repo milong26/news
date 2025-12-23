@@ -985,7 +985,9 @@ def create_lerobot_dataset_card(
 
 
 def validate_frame(frame: dict, features: dict) -> None:
+    # 如果use_origin_dataset就不去掉默认的timestamp等，否则就自动生成->失败了，不选择这个方案
     expected_features = set(features) - set(DEFAULT_FEATURES)
+    # expected_features = set(features) - set(DEFAULT_FEATURES) if not use_origin_dataset else set(features)
     actual_features = set(frame)
 
     # task is a special required field that's not part of regular features
