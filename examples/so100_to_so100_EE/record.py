@@ -43,13 +43,13 @@ from lerobot.utils.control_utils import init_keyboard_listener
 from lerobot.utils.utils import log_say
 # from lerobot.utils.visualization_utils import init_rerun
 
-NUM_EPISODES = 1
+NUM_EPISODES = 50
 FPS = 30
-EPISODE_TIME_SEC = 60
+EPISODE_TIME_SEC = 30
 RESET_TIME_SEC = 2
 TASK_DESCRIPTION = "pick up the yellow sachet and place it into the box."
 # init_rerun(session_name="recording_phone")
-HF_REPO_ID = "test_one/ee"
+HF_REPO_ID = "collect_data/fourth_camera"
 def main():
     # 摄像头配置
     camera_config = {
@@ -198,6 +198,7 @@ def main():
     print("Starting record loop...")
     episode_idx = 0
     while episode_idx < NUM_EPISODES and not events["stop_recording"]:
+        print(f"Recording episode {episode_idx + 1} of {NUM_EPISODES}")
         log_say(f"Recording episode {episode_idx + 1} of {NUM_EPISODES}")
 
         # Main record loop
