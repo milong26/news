@@ -180,3 +180,6 @@ outputs/
 
 # 数据集
 dataset/
+
+# 训练好的模型
+*.safetensors

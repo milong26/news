@@ -500,11 +500,11 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
     if is_main_process:
         logging.info("End of training")
 
-        if cfg.policy.push_to_hub:
-            unwrapped_policy = accelerator.unwrap_model(policy)
-            unwrapped_policy.push_model_to_hub(cfg)
-            preprocessor.push_to_hub(cfg.policy.repo_id)
-            postprocessor.push_to_hub(cfg.policy.repo_id)
+        # if cfg.policy.push_to_hub:
+        #     unwrapped_policy = accelerator.unwrap_model(policy)
+        #     unwrapped_policy.push_model_to_hub(cfg)
+        #     preprocessor.push_to_hub(cfg.policy.repo_id)
+        #     postprocessor.push_to_hub(cfg.policy.repo_id)
 
     # Properly clean up the distributed process group
     accelerator.wait_for_everyone()

@@ -200,7 +200,7 @@ def main():
     listener.stop()
 
     dataset.finalize()
-    dataset.push_to_hub()
+    # dataset.push_to_hub()
 
 
 if __name__ == "__main__":
