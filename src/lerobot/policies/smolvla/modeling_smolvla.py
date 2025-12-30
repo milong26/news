@@ -78,6 +78,20 @@ class ActionSelectKwargs(TypedDict, total=False):
     execution_horizon: int | None
 
 
+# 为了处理输入的state
+class StateAdapter(nn.Module):
+    def __init__(self, input_dim, hidden_dim, output_dim):
+        super().__init__()
+        self.mlp = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, output_dim),
+        )
+
+    def forward(self, x):
+        return self.mlp(x)
+
+
 def create_sinusoidal_pos_embedding(
     time: torch.tensor, dimension: int, min_period: float, max_period: float, device="cpu"
 ) -> Tensor:
@@ -559,6 +573,13 @@ class VLAFlowMatching(nn.Module):
             self.vlm_with_expert.expert_hidden_size, self.vlm_with_expert.expert_hidden_size
         )
 
+        # 增加mlp层用于处理输入的state
+        self.state_adapter = StateAdapter(
+            input_dim=self.vlm_with_expert.config.text_config.hidden_size,
+            hidden_dim=self.vlm_with_expert.config.text_config.hidden_size * 2,
+            output_dim=self.vlm_with_expert.config.text_config.hidden_size
+        )
+
         self.set_requires_grad()
         self.fake_image_token = self.vlm_with_expert.processor.tokenizer.fake_image_token_id
         self.global_image_token = self.vlm_with_expert.processor.tokenizer.global_image_token_id
@@ -662,6 +683,9 @@ class VLAFlowMatching(nn.Module):
         att_masks += [0] * num_lang_embs
 
         state_emb = self.state_proj(state)
+        # 在原来的state_proj后增加adapter
+        state_emb = self.state_adapter(state_emb)
+
         state_emb = state_emb[:, None, :] if state_emb.ndim == 2 else state_emb
         embs.append(state_emb)
         bsize = state_emb.shape[0]
