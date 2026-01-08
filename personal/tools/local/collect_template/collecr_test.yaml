@@ -28,10 +28,10 @@ robot:
   #     num_mags: 5
   
 
-# teleop:
-#   type: so100_leader
-#   port: /dev/ttyACM1
-#   id: leader
+teleop:
+  type: so100_leader
+  port: /dev/ttyACM1
+  id: leader
 
 
 # 个性化
@@ -44,9 +44,9 @@ dataset:
   episode_time_s: 30
   push_to_hub: false
   reset_time_s: 1
-  # save_image_folder: true
+  save_image_folder: true
 
-policy:
-  type: act
+# policy:
+#   type: act
 # resume: True
 

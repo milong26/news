@@ -49,13 +49,13 @@ EPISODE_TIME_SEC = 30
 RESET_TIME_SEC = 2
 TASK_DESCRIPTION = "pick up the yellow sachet and place it into the box."
 # init_rerun(session_name="recording_phone")
-HF_REPO_ID = "collect_data/fourth_camera"
+HF_REPO_ID = "test/heihei"
 def main():
     # 摄像头配置
     camera_config = {
         "wrist": OpenCVCameraConfig(index_or_path=0, width=640, height=480, fps=FPS),
         # 如果以后要加 side 摄像头可以在这里添加
-        "side": RealSenseCameraConfig(serial_number_or_name="806312060427", width=640, height=480, fps=FPS, use_depth=False)
+        "side": RealSenseCameraConfig(serial_number_or_name="806312060427", width=640, height=480, fps=FPS, use_depth=True)
     }
 
     # 机器人配置
