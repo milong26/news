@@ -1,0 +1,52 @@
+# sudo chmod 666 /dev/ttyACM0
+# sudo chmod 666 /dev/ttyACM1
+# lerobot-find-cameras opencv
+# lerobot-record --config_path=tools/collect/collect_joint_test.yaml
+
+robot:
+  type: so100_follower
+  port: /dev/ttyACM0
+  id: follower
+  cameras:
+    side:
+      type: intelrealsense
+      serial_number_or_name: 806312060427
+      width: 640
+      height: 480
+      fps: 30
+      use_depth: false
+    wrist:
+      type: opencv
+      index_or_path: 0
+      width: 640
+      height: 480
+      fps: 30
+  # sensors:
+  #   wrist:
+  #     type: WowForceSensor
+  #     port: /dev/ttyACM2
+  #     num_mags: 5
+  
+
+# teleop:
+#   type: so100_leader
+#   port: /dev/ttyACM1
+#   id: leader
+
+
+# 个性化
+display_data: false
+
+dataset:
+  repo_id: 119/joint
+  num_episodes: 1
+  single_task: "pick up and test."
+  episode_time_s: 30
+  push_to_hub: false
+  reset_time_s: 1
+  # save_image_folder: true
+
+policy:
+  type: act
+# resume: True
+
