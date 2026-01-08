@@ -14,6 +14,44 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""
+SmolVLA:
+
+[Paper](https://huggingface.co/papers/2506.01844)
+
+Designed by Hugging Face.
+
+Install smolvla extra dependencies:
+```bash
+pip install -e ".[smolvla]"
+```
+
+Example of finetuning the smolvla pretrained model (`smolvla_base`):
+```bash
+lerobot-train \
+--policy.path=lerobot/smolvla_base \
+--dataset.repo_id=danaaubakirova/svla_so100_task1_v3 \
+--batch_size=64 \
+--steps=200000
+```
+
+Example of finetuning a smolVLA. SmolVLA is composed of a pretrained VLM,
+and an action expert.
+```bash
+lerobot-train \
+--policy.type=smolvla \
+--dataset.repo_id=danaaubakirova/svla_so100_task1_v3 \
+--batch_size=64 \
+--steps=200000
+```
+
+Example of using the smolvla pretrained model outside LeRobot training framework:
+```python
+policy = SmolVLAPolicy.from_pretrained("lerobot/smolvla_base")
+```
+
+"""
+
 import math
 from collections import deque
 from typing import TypedDict
@@ -38,20 +76,6 @@ class ActionSelectKwargs(TypedDict, total=False):
     inference_delay: int | None
     prev_chunk_left_over: Tensor | None
     execution_horizon: int | None
-
-
-# 为了处理输入的state
-class StateAdapter(nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim):
-        super().__init__()
-        self.mlp = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.SiLU(),
-            nn.Linear(hidden_dim, output_dim),
-        )
-
-    def forward(self, x):
-        return self.mlp(x)
 
 
 def create_sinusoidal_pos_embedding(
@@ -535,13 +559,6 @@ class VLAFlowMatching(nn.Module):
             self.vlm_with_expert.expert_hidden_size, self.vlm_with_expert.expert_hidden_size
         )
 
-        # 增加mlp层用于处理输入的state
-        self.state_adapter = StateAdapter(
-            input_dim=self.vlm_with_expert.config.text_config.hidden_size,
-            hidden_dim=self.vlm_with_expert.config.text_config.hidden_size * 2,
-            output_dim=self.vlm_with_expert.config.text_config.hidden_size
-        )
-
         self.set_requires_grad()
         self.fake_image_token = self.vlm_with_expert.processor.tokenizer.fake_image_token_id
         self.global_image_token = self.vlm_with_expert.processor.tokenizer.global_image_token_id
@@ -645,8 +662,6 @@ class VLAFlowMatching(nn.Module):
         att_masks += [0] * num_lang_embs
 
         state_emb = self.state_proj(state)
-        # 在原来的state_proj后增加adapter
-        state_emb = self.state_adapter(state_emb)
 
         state_emb = state_emb[:, None, :] if state_emb.ndim == 2 else state_emb
         embs.append(state_emb)

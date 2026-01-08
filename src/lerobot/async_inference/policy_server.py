@@ -383,7 +383,7 @@ class PolicyServer(services_pb2_grpc.AsyncInferenceServicer):
 
         """5. Convert to TimedAction list"""
         action_chunk = self._time_action_chunk(
-            observation_t.get_timestamp(), list(action_tensor), observation_t.get_timestep()
+            observation_t.get_timestamp(), list(action_tensor.cpu()), observation_t.get_timestep()
         )
         postprocess_stops = time.perf_counter()
         postprocessing_time = postprocess_stops - start_postprocess

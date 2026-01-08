@@ -51,6 +51,9 @@ from lerobot.utils.utils import (
     has_method,
     init_logging,
 )
+import random
+from torch.utils.data import Subset
+from typing import Tuple
 
 
 def update_policy(
@@ -129,7 +132,6 @@ def update_policy(
     # Optimizer step
     with lock if lock is not None else nullcontext():
         optimizer.step()
-
     optimizer.zero_grad()
 
     # Step through pytorch scheduler at every batch instead of epoch
@@ -145,6 +147,54 @@ def update_policy(
     train_metrics.lr = optimizer.param_groups[0]["lr"]
     train_metrics.update_s = time.perf_counter() - start_time
     return train_metrics, output_dict
+
+
+def split_dataset(dataset, train_ratio: float = 0.8, seed: int = 42) -> Tuple[Subset, Subset]:
+    """
+    Split an episodic dataset into train and validation sets by episode.
+
+    Args:
+        dataset: Dataset object, expected to have `meta.episodes` dict with keys 'dataset_from_index' and 'dataset_to_index'
+        train_ratio: Fraction of episodes to use for training (0 < train_ratio <= 1)
+        seed: Random seed for reproducibility
+
+    Returns:
+        train_dataset, val_dataset: two Subset instances
+    """
+    if not hasattr(dataset, "meta") or not hasattr(dataset.meta, "episodes"):
+        raise ValueError("Dataset must have meta.episodes for episodic splitting")
+
+    episodes_meta = dataset.meta.episodes  # dict with keys: dataset_from_index, dataset_to_index
+    num_episodes = len(episodes_meta["dataset_from_index"])
+    indices = list(range(num_episodes))
+    random.seed(seed)
+    random.shuffle(indices)
+
+    split_idx = int(train_ratio * num_episodes)
+    train_episode_indices = indices[:split_idx]
+    val_episode_indices = indices[split_idx:]
+
+    # Convert episode indices to frame indices
+    def episodes_to_frame_indices(episode_indices):
+        frame_indices = []
+        for idx in episode_indices:
+            start = episodes_meta["dataset_from_index"][idx]
+            end = episodes_meta["dataset_to_index"][idx]
+            frame_indices.extend(range(start, end))
+        return frame_indices
+
+    train_frame_indices = episodes_to_frame_indices(train_episode_indices)
+    val_frame_indices = episodes_to_frame_indices(val_episode_indices)
+
+    # Store episode info for sampler if needed
+    dataset.episodes = {
+        "train": train_episode_indices,
+        "val": val_episode_indices
+    }
+
+    train_dataset = Subset(dataset, train_frame_indices)
+    val_dataset = Subset(dataset, val_frame_indices)
+    return train_dataset, val_dataset
 
 
 @parser.wrap()
@@ -203,11 +253,16 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
     if is_main_process:
         logging.info("Creating dataset")
         dataset = make_dataset(cfg)
+
     accelerator.wait_for_everyone()
 
     # Now all other processes can safely load the dataset
     if not is_main_process:
         dataset = make_dataset(cfg)
+
+    # 增加数据集划分
+    train_dataset, val_dataset = split_dataset(dataset, train_ratio=0.8, seed=cfg.seed or 42)
+    logging.info(f"Train dataset frames: {len(train_dataset)}, Val dataset frames: {len(val_dataset)}")
 
     # Create environment used for evaluating checkpoints during training on simulation data.
     # On real-world data, no need to create an environment as evaluations are done outside train.py,
@@ -270,6 +325,24 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
     if is_main_process:
         logging.info("Creating optimizer and scheduler")
     optimizer, lr_scheduler = make_optimizer_and_scheduler(cfg, policy)
+    # # 只微调state_adapter
+    # for param in policy.parameters():
+    #     param.requires_grad = False
+
+    # # 解冻 state_adapter
+    # for param in policy.model.state_adapter.parameters():
+    #     param.requires_grad = True
+    # # 解冻输出头
+    # for param in policy.model.action_out_proj.parameters():
+    #     param.requires_grad = True
+
+    # # 然后创建 optimizer，只优化解冻参数
+    # optimizer = torch.optim.Adam(
+    #     filter(lambda p: p.requires_grad, policy.parameters()),
+    #     lr=cfg.optimizer.lr
+    # )
+    # from torch.optim.lr_scheduler import CosineAnnealingLR
+    # lr_scheduler = CosineAnnealingLR(optimizer, T_max=cfg.steps)
 
     # Load precomputed SARM progress for RA-BC if enabled
     # Generate progress using: src/lerobot/policies/sarm/compute_rabc_weights.py
@@ -333,8 +406,8 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         shuffle = True
         sampler = None
 
-    dataloader = torch.utils.data.DataLoader(
-        dataset,
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset,
         num_workers=cfg.num_workers,
         batch_size=cfg.batch_size,
         shuffle=shuffle and not cfg.dataset.streaming,
@@ -343,13 +416,26 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         drop_last=False,
         prefetch_factor=2 if cfg.num_workers > 0 else None,
     )
+    if cfg.eval_freq > 0:
+        val_loader = torch.utils.data.DataLoader(
+            val_dataset,
+            num_workers=cfg.num_workers,
+            batch_size=cfg.batch_size,
+            shuffle=False,
+            pin_memory=device.type == "cuda",
+            drop_last=False,
+            prefetch_factor=2 if cfg.num_workers > 0 else None,
+        )
+
 
     # Prepare everything with accelerator
     accelerator.wait_for_everyone()
-    policy, optimizer, dataloader, lr_scheduler = accelerator.prepare(
-        policy, optimizer, dataloader, lr_scheduler
+    policy, optimizer, train_loader, lr_scheduler = accelerator.prepare(
+        policy, optimizer, train_loader, lr_scheduler
     )
-    dl_iter = cycle(dataloader)
+    if cfg.eval_freq > 0:
+        val_loader = accelerator.prepare(val_loader)
+    dl_iter = cycle(train_loader)
 
     policy.train()
 
@@ -440,55 +526,94 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                     wandb_logger.log_policy(checkpoint_dir)
 
             accelerator.wait_for_everyone()
-
-        if cfg.env and is_eval_step:
+        # Eval / Validation
+        if cfg.eval_freq > 0 and step % cfg.eval_freq == 0:
             if is_main_process:
                 step_id = get_step_identifier(step, cfg.steps)
                 logging.info(f"Eval policy at step {step}")
-                with torch.no_grad(), accelerator.autocast():
-                    eval_info = eval_policy_all(
-                        envs=eval_env,  # dict[suite][task_id] -> vec_env
-                        policy=accelerator.unwrap_model(policy),
-                        env_preprocessor=env_preprocessor,
-                        env_postprocessor=env_postprocessor,
-                        preprocessor=preprocessor,
-                        postprocessor=postprocessor,
-                        n_episodes=cfg.eval.n_episodes,
-                        videos_dir=cfg.output_dir / "eval" / f"videos_step_{step_id}",
-                        max_episodes_rendered=4,
-                        start_seed=cfg.seed,
-                        max_parallel_tasks=cfg.env.max_parallel_tasks,
+
+                # ----- 原来的环境评估 -----
+                if cfg.env:
+                    with torch.no_grad(), accelerator.autocast():
+                        eval_info = eval_policy_all(
+                            envs=eval_env,  # dict[suite][task_id] -> vec_env
+                            policy=accelerator.unwrap_model(policy),
+                            env_preprocessor=env_preprocessor,
+                            env_postprocessor=env_postprocessor,
+                            preprocessor=preprocessor,
+                            postprocessor=postprocessor,
+                            n_episodes=cfg.eval.n_episodes,
+                            videos_dir=cfg.output_dir / "eval" / f"videos_step_{step_id}",
+                            max_episodes_rendered=4,
+                            start_seed=cfg.seed,
+                            max_parallel_tasks=cfg.env.max_parallel_tasks,
+                        )
+                    # overall metrics (suite-agnostic)
+                    aggregated = eval_info["overall"]
+
+                    # optional: per-suite logging
+                    for suite, suite_info in eval_info.items():
+                        logging.info("Suite %s aggregated: %s", suite, suite_info)
+
+                    # meters/tracker
+                    eval_metrics = {
+                        "avg_sum_reward": AverageMeter("∑rwrd", ":.3f"),
+                        "pc_success": AverageMeter("success", ":.1f"),
+                        "eval_s": AverageMeter("eval_s", ":.3f"),
+                    }
+                    eval_tracker = MetricsTracker(
+                        cfg.batch_size,
+                        dataset.num_frames,
+                        dataset.num_episodes,
+                        eval_metrics,
+                        initial_step=step,
+                        accelerator=accelerator,
                     )
-                # overall metrics (suite-agnostic)
-                aggregated = eval_info["overall"]
+                    eval_tracker.eval_s = aggregated.pop("eval_s")
+                    eval_tracker.avg_sum_reward = aggregated.pop("avg_sum_reward")
+                    eval_tracker.pc_success = aggregated.pop("pc_success")
 
-                # optional: per-suite logging
-                for suite, suite_info in eval_info.items():
-                    logging.info("Suite %s aggregated: %s", suite, suite_info)
+                    if wandb_logger:
+                        wandb_log_dict = {**eval_tracker.to_dict(), **eval_info}
+                        wandb_logger.log_dict(wandb_log_dict, step, mode="eval")
 
-                # meters/tracker
-                eval_metrics = {
-                    "avg_sum_reward": AverageMeter("∑rwrd", ":.3f"),
-                    "pc_success": AverageMeter("success", ":.1f"),
-                    "eval_s": AverageMeter("eval_s", ":.3f"),
-                }
-                eval_tracker = MetricsTracker(
-                    cfg.batch_size,
-                    dataset.num_frames,
-                    dataset.num_episodes,
-                    eval_metrics,
-                    initial_step=step,
-                    accelerator=accelerator,
-                )
-                eval_tracker.eval_s = aggregated.pop("eval_s")
-                eval_tracker.avg_sum_reward = aggregated.pop("avg_sum_reward")
-                eval_tracker.pc_success = aggregated.pop("pc_success")
-                if wandb_logger:
-                    wandb_log_dict = {**eval_tracker.to_dict(), **eval_info}
-                    wandb_logger.log_dict(wandb_log_dict, step, mode="eval")
-                    wandb_logger.log_video(eval_info["overall"]["video_paths"][0], step, mode="eval")
+                # ----- 新增验证 L1 loss -----
+                if val_dataset is not None:
+                    policy.eval()
+                    policy.model.eval()
+                    val_metrics = {"loss": AverageMeter("val_loss", ":.3f")}
+                    val_tracker = MetricsTracker(
+                        cfg.batch_size,
+                        len(val_dataset),
+                        1,
+                        val_metrics,
+                        initial_step=step,
+                        accelerator=accelerator
+                    )
+
+                    import torch.nn.functional as F
+                    ACTION = "action"  # 根据你的 dataset key 设置
+
+                    with torch.no_grad(), accelerator.autocast():
+                        for val_batch in val_loader:
+                            val_batch = preprocessor(val_batch)
+                            # 直接预测动作，不调用 forward 避免 KL 计算
+                            actions_hat = policy.predict_action_chunk(val_batch)
+                            # 手动计算 L1 loss
+                            l1_loss = (F.l1_loss(val_batch[ACTION], actions_hat, reduction="none")
+                                    * ~val_batch.get("action_is_pad", torch.zeros_like(val_batch[ACTION][:,0], dtype=torch.bool)).unsqueeze(-1)
+                                    ).mean()
+                            val_tracker.loss = l1_loss.item()
+                            val_tracker.step()
+
+                    if wandb_logger:
+                        wandb_logger.log_dict(val_tracker.to_dict(), step, mode="eval")
+
+                    policy.model.train()
+                    policy.train()
 
             accelerator.wait_for_everyone()
+
 
     if eval_env:
         close_envs(eval_env)

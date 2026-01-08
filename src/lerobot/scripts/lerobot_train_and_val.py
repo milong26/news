@@ -173,11 +173,11 @@ def train_and_validate(cfg: TrainPipelineConfig, train_ratio: float = 0.8, accel
     if is_main_process:
         logging.info("Creating dataset")
         dataset = make_dataset(cfg)
-        train_dataset, val_dataset = split_dataset(dataset, train_ratio)
+        train_dataset, val_dataset = split_dataset(dataset, train_ratio, seed=42)
     accelerator.wait_for_everyone()
     if not is_main_process:
         dataset = make_dataset(cfg)
-        train_dataset, val_dataset = split_dataset(dataset, train_ratio)
+        train_dataset, val_dataset = split_dataset(dataset, train_ratio, seed=42)
 
     # Policy
     if is_main_process:
@@ -194,7 +194,28 @@ def train_and_validate(cfg: TrainPipelineConfig, train_ratio: float = 0.8, accel
         processor_kwargs["dataset_meta"] = dataset.meta
     preprocessor, postprocessor = make_pre_post_processors(policy_cfg=cfg.policy, pretrained_path=cfg.policy.pretrained_path, **processor_kwargs, **postprocessor_kwargs)
 
-    optimizer, lr_scheduler = make_optimizer_and_scheduler(cfg, policy)
+    # 默认的微调
+    # optimizer, lr_scheduler = make_optimizer_and_scheduler(cfg, policy)
+
+    # 只微调state_adapter
+    for param in policy.parameters():
+        param.requires_grad = False
+
+    # 解冻 state_adapter
+    for param in policy.model.state_adapter.parameters():
+        param.requires_grad = True
+
+    # 然后创建 optimizer，只优化解冻参数
+    optimizer = torch.optim.Adam(
+        filter(lambda p: p.requires_grad, policy.parameters()),
+        lr=cfg.optimizer.lr
+    )
+    from lerobot.optim.schedulers import (
+        CosineDecayWithWarmupSchedulerConfig,
+    )
+
+    lr_scheduler=None
+
 
     # DataLoaders
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=cfg.batch_size, shuffle=True, num_workers=cfg.num_workers, pin_memory=device.type == "cuda", drop_last=True)
