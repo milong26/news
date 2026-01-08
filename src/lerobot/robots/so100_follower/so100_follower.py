@@ -156,10 +156,11 @@ class SO100Follower(Robot):
             for motor in self.bus.motors:
                 self.bus.write("Operating_Mode", motor, OperatingMode.POSITION.value)
                 # Set P_Coefficient to lower value to avoid shakiness (Default is 32)
-                self.bus.write("P_Coefficient", motor, 16)
+                # 改小pid参数减少抖动，默认是16，0，320
+                self.bus.write("P_Coefficient", motor, 12)
                 # Set I_Coefficient and D_Coefficient to default value 0 and 32
                 self.bus.write("I_Coefficient", motor, 0)
-                self.bus.write("D_Coefficient", motor, 32)
+                self.bus.write("D_Coefficient", motor, 0)
 
                 if motor == "gripper":
                     self.bus.write("Max_Torque_Limit", motor, 500)  # 50% of max torque to avoid burnout
@@ -189,6 +190,22 @@ class SO100Follower(Robot):
             obs_dict[cam_key] = cam.async_read()
             dt_ms = (time.perf_counter() - start) * 1e3
             logger.debug(f"{self} read {cam_key}: {dt_ms:.1f}ms")
+
+        return obs_dict
+    
+    # 增加新的函数，返回的内容不包括相机，防止频繁调用相机
+    def get_only_state_obs(self) -> dict[str, Any]:
+        """
+        Get only robot joint / motor states without reading cameras.
+        """
+        if not self.is_connected:
+            raise DeviceNotConnectedError(f"{self} is not connected.")
+        # Read arm position
+        start = time.perf_counter()
+        obs_dict = self.bus.sync_read("Present_Position")
+        obs_dict = {f"{motor}.pos": val for motor, val in obs_dict.items()}
+        dt_ms = (time.perf_counter() - start) * 1e3
+        logger.debug(f"{self} read state (no camera): {dt_ms:.1f}ms")
 
         return obs_dict
 
