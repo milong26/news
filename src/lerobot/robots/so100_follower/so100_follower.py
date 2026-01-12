@@ -69,9 +69,17 @@ class SO100Follower(Robot):
         return {
             cam: (self.config.cameras[cam].height, self.config.cameras[cam].width, 3) for cam in self.cameras
         }
+    
+    @property
+    def _depth_ft(self) ->dict[str,tuple]:
+        return {
+            f"{cam}_depth": (self.config.cameras[cam].height, self.config.cameras[cam].width, 1) for cam in self.cameras 
+            if getattr(self.config.cameras[cam], "use_depth", False)
+        }
 
     @cached_property
     def observation_features(self) -> dict[str, type | tuple]:
+        # return {**self._motors_ft, **self._cameras_ft,**self._depth_ft}
         return {**self._motors_ft, **self._cameras_ft}
 
     @cached_property
@@ -187,7 +195,25 @@ class SO100Follower(Robot):
         # Capture images from cameras
         for cam_key, cam in self.cameras.items():
             start = time.perf_counter()
-            obs_dict[cam_key] = cam.async_read()
+            frames = cam.async_read()
+            # opencv相机返回numpy，realsense相机返回dict
+            # realsense相机在use_depth的时候返回color和depth
+            # obs_dict[cam_key] = cam.async_read()
+            if isinstance(frames, dict):
+                # 必须至少有 color
+                if "color" not in frames:
+                    raise RuntimeError(f"{cam_key} async_read returned dict without 'color' key")
+
+                obs_dict[cam_key] = frames["color"]
+
+                # depth 是可选的（取决于 use_depth）
+                if "depth" in frames and frames["depth"] is not None:
+                    obs_dict[f"{cam_key}_depth"] = frames["depth"]
+
+            # 情况 2：普通相机（opencv 等）
+            else:
+                # frames 就是 color ndarray
+                obs_dict[cam_key] = frames
             dt_ms = (time.perf_counter() - start) * 1e3
             logger.debug(f"{self} read {cam_key}: {dt_ms:.1f}ms")
 

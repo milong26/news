@@ -43,13 +43,13 @@ from lerobot.utils.control_utils import init_keyboard_listener
 from lerobot.utils.utils import log_say
 # from lerobot.utils.visualization_utils import init_rerun
 
-NUM_EPISODES = 50
+NUM_EPISODES = 1
 FPS = 30
-EPISODE_TIME_SEC = 30
+EPISODE_TIME_SEC = 10
 RESET_TIME_SEC = 2
 TASK_DESCRIPTION = "pick up the yellow sachet and place it into the box."
 # init_rerun(session_name="recording_phone")
-HF_REPO_ID = "test/heihei"
+HF_REPO_ID = "test/heihe"
 def main():
     # 摄像头配置
     camera_config = {
@@ -146,6 +146,11 @@ def main():
                 use_videos=True,
             ),
         )
+    new_features["observation.images.side_depth"]={
+        "dtype": "depth",
+        "shape": (480, 640,1),
+        "names": ["height", "width","channel", ],
+    }
     # 增加两个feature
     new_features["joint_action"] = {
         "dtype": "float32",

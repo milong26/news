@@ -133,7 +133,9 @@ class RealSenseCamera(Camera):
         self.thread: Thread | None = None
         self.stop_event: Event | None = None
         self.frame_lock: Lock = Lock()
-        self.latest_frame: NDArray[Any] | None = None
+        # self.latest_frame: NDArray[Any] | None = None
+        # 以前只能存color frame，改成字典，可以同时存color和depth
+        self.latest_frame: dict[str, NDArray[Any]] | None = None
         self.new_frame_event: Event = Event()
 
         self.rotation: int | None = get_cv2_rotation(config.rotation)
@@ -400,6 +402,55 @@ class RealSenseCamera(Camera):
         logger.debug(f"{self} read took: {read_duration_ms:.1f}ms")
 
         return color_image_processed
+    
+
+    # 仿照def read写的，能同时读取彩色和深度
+    def read_both(self, timeout_ms: int = 200) -> dict[str, np.ndarray]:
+        """
+        Synchronously reads both color and depth frames from the camera.
+        Returns:
+            dict with keys "color" and "depth", both as np.ndarray.
+        Raises:
+            DeviceNotConnectedError, RuntimeError
+        """
+        if not self.is_connected:
+            raise DeviceNotConnectedError(f"{self} is not connected.")
+        # start_time = time.perf_counter()
+
+        if self.rs_pipeline is None:
+            raise RuntimeError(f"{self}: rs_pipeline must be initialized before use.")
+
+        # 从同一帧集合获取 color + depth
+        ret, frameset = self.rs_pipeline.try_wait_for_frames(timeout_ms=timeout_ms)
+        if not ret or frameset is None:
+            raise RuntimeError(f"{self} read_both failed (status={ret})")
+
+        # 获取彩色和深度
+        color_frame = frameset.get_color_frame()
+
+        if color_frame is None:
+            raise RuntimeError(f"{self} failed to retrieve color or depth frames.")
+
+        color_image = np.asanyarray(color_frame.get_data())
+        color_image_processed = self._postprocess_image(color_image)
+
+        result: dict[str, np.ndarray] = {
+            "color": color_image_processed
+        }
+
+        # -------- depth 是可选的 --------
+        if self.use_depth:
+            depth_frame = frameset.get_depth_frame()
+            if depth_frame is None:
+                raise RuntimeError(f"{self} failed to retrieve depth frame.")
+            depth_image = np.asanyarray(depth_frame.get_data())
+            depth_image_processed = self._postprocess_image(
+                depth_image, depth_frame=True
+            )
+            result["depth"] = depth_image_processed
+
+        return result
+
 
     def _postprocess_image(
         self, image: NDArray[Any], color_mode: ColorMode | None = None, depth_frame: bool = False
@@ -445,6 +496,10 @@ class RealSenseCamera(Camera):
 
         if self.rotation in [cv2.ROTATE_90_CLOCKWISE, cv2.ROTATE_90_COUNTERCLOCKWISE, cv2.ROTATE_180]:
             processed_image = cv2.rotate(processed_image, self.rotation)
+        
+        # 给深度图加一个维度
+        if depth_frame and processed_image.ndim==2:
+            processed_image = processed_image[:,:,None]
 
         return processed_image
 
@@ -464,10 +519,12 @@ class RealSenseCamera(Camera):
 
         while not self.stop_event.is_set():
             try:
-                color_image = self.read(timeout_ms=500)
+                # color_image = self.read(timeout_ms=500)
+                frames = self.read_both(timeout_ms=500)
 
                 with self.frame_lock:
-                    self.latest_frame = color_image
+                    # self.latest_frame = color_image
+                    self.latest_frame=frames
                 self.new_frame_event.set()
 
             except DeviceNotConnectedError:
@@ -499,7 +556,7 @@ class RealSenseCamera(Camera):
         self.stop_event = None
 
     # NOTE(Steven): Missing implementation for depth for now
-    def async_read(self, timeout_ms: float = 200) -> NDArray[Any]:
+    def async_read(self, timeout_ms: float = 400) -> NDArray[Any]:
         """
         Reads the latest available frame data (color) asynchronously.
 

@@ -193,8 +193,10 @@ class RecordConfig:
     def __post_init__(self):
         # HACK: We parse again the cli args here to get the pretrained path if there was one.
         policy_path = parser.get_path_arg("policy")
+
         if policy_path:
             cli_overrides = parser.get_cli_overrides("policy")
+
             self.policy = PreTrainedConfig.from_pretrained(policy_path, cli_overrides=cli_overrides)
             self.policy.pretrained_path = policy_path
 
@@ -323,6 +325,7 @@ def record_loop(
             if key in obs:  # 确保obs中有这个值
                 obs_processed[key] = obs[key]
         if policy is not None or dataset is not None:
+            # build_dataset_frame这个函数是把obs填入dataset对应的feature
             observation_frame = build_dataset_frame(dataset.features, obs_processed, prefix=OBS_STR)
 
         # Get action from either policy or teleop
@@ -386,6 +389,7 @@ def record_loop(
             action_frame = build_dataset_frame(dataset.features, action_values, prefix=ACTION)
             # frame = {**observation_frame, **action_frame, "task": single_task}
             frame = {**observation_frame,**action_joint_frame, **action_frame, "task": single_task}
+            # 这里的frame里面需要加上depth的
             dataset.add_frame(frame)
 
         if display_data:
