@@ -17,9 +17,9 @@ from scipy.spatial.transform import Rotation as R
 # --------------------------
 # 用户配置
 # --------------------------
-SOURCE_REPO_IDs = ["mcamera/second","mcamera/third","mcamera/fourth","mcamera/fifth",
+SOURCE_REPO_IDs = ["mcamera/third","mcamera/fourth","mcamera/fifth",
                    "mcamera_side/first","mcamera_side/second","mcamera_side/third","mcamera_side/fourth","mcamera_side/fifth"]  # 原始数据集 repo_id
-TARGET_REPO_ID =  None           # None 自动生成
+       # None 自动生成
 
 # 必须指定ee还是joint
 # 后面可以选择 "camera""delta"
@@ -130,6 +130,7 @@ def convert_frame(arr, T=None, delta=False, prev=None):
 # --------------------------
 
 for SOURCE_REPO_ID in SOURCE_REPO_IDs:
+    TARGET_REPO_ID =  None    
     old_dataset = LeRobotDataset(repo_id=SOURCE_REPO_ID)
     FPS, ROBOT_TYPE = old_dataset.meta.fps, old_dataset.meta.robot_type
     old_features = deepcopy(old_dataset.features)

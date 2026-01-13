@@ -183,3 +183,5 @@ dataset/
 
 # 训练好的模型
 *.safetensors
+
+personal/logs/
