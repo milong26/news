@@ -1114,7 +1114,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
                 image=image, fpath=fpath, compress_level=compress_level, is_depth=is_depth
             )
 
-    def add_frame(self, frame: dict) -> None:
+    def add_frame(self, frame: dict, use_origin_data:bool=False) -> None:
         """
         This function only adds the frame to the episode_buffer. Apart from images — which are written in a
         temporary directory — nothing is written to disk. To save those frames, the 'save_episode()' method
@@ -1124,14 +1124,16 @@ class LeRobotDataset(torch.utils.data.Dataset):
         for name in frame:
             if isinstance(frame[name], torch.Tensor):
                 frame[name] = frame[name].numpy()
-
-        validate_frame(frame, self.features)
+        if not use_origin_data:
+            validate_frame(frame, self.features)
 
         if self.episode_buffer is None:
             self.episode_buffer = self.create_episode_buffer()
 
         # Automatically add frame_index and timestamp to episode buffer
         frame_index = self.episode_buffer["size"]
+        if use_origin_data and frame_index is None:
+            frame_index=frame.pop("frame_index")
         timestamp = frame.pop("timestamp") if "timestamp" in frame else frame_index / self.fps
         self.episode_buffer["frame_index"].append(frame_index)
         self.episode_buffer["timestamp"].append(timestamp)
@@ -1139,6 +1141,8 @@ class LeRobotDataset(torch.utils.data.Dataset):
 
         # Add frame features to episode_buffer
         for key in frame:
+            if key in ['timestamp', 'task_index', 'episode_index', 'index', 'frame_index']:
+                continue
             if key not in self.features:
                 raise ValueError(
                     f"An element of the frame is not in the features. '{key}' not in '{self.features.keys()}'."
@@ -1152,6 +1156,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
                     img_path.parent.mkdir(parents=True, exist_ok=True)
                 compress_level = 1 if self.features[key]["dtype"] == "video" else 6
                 is_depth = self.features[key]["dtype"] == "depth"
+                # if not use_origin_data:
                 self._save_image(frame[key], img_path, compress_level, is_depth=is_depth)
                 self.episode_buffer[key].append(str(img_path))
             else:

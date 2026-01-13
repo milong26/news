@@ -43,13 +43,13 @@ from lerobot.utils.control_utils import init_keyboard_listener
 from lerobot.utils.utils import log_say
 # from lerobot.utils.visualization_utils import init_rerun
 
-NUM_EPISODES = 1
+NUM_EPISODES = 30
 FPS = 30
-EPISODE_TIME_SEC = 10
+EPISODE_TIME_SEC = 30
 RESET_TIME_SEC = 2
-TASK_DESCRIPTION = "pick up the yellow sachet and place it into the box."
+TASK_DESCRIPTION = "pick up the yellow sponge and place it into box."
 # init_rerun(session_name="recording_phone")
-HF_REPO_ID = "test/heihe"
+HF_REPO_ID = "mcamera_side/fifth"
 def main():
     # 摄像头配置
     camera_config = {

@@ -17,7 +17,8 @@ from scipy.spatial.transform import Rotation as R
 # --------------------------
 # 用户配置
 # --------------------------
-SOURCE_REPO_ID = "mcamera/first"  # 原始数据集 repo_id
+SOURCE_REPO_IDs = ["mcamera/second","mcamera/third","mcamera/fourth","mcamera/fifth",
+                   "mcamera_side/first","mcamera_side/second","mcamera_side/third","mcamera_side/fourth","mcamera_side/fifth"]  # 原始数据集 repo_id
 TARGET_REPO_ID =  None           # None 自动生成
 
 # 必须指定ee还是joint
@@ -127,101 +128,104 @@ def convert_frame(arr, T=None, delta=False, prev=None):
 # --------------------------
 # 加载旧数据集
 # --------------------------
-old_dataset = LeRobotDataset(repo_id=SOURCE_REPO_ID)
-FPS, ROBOT_TYPE = old_dataset.meta.fps, old_dataset.meta.robot_type
-old_features = deepcopy(old_dataset.features)
 
-source_action_key = get_source_key("action", action_info['type'])
-source_state_key  = get_source_key("state", state_info['type'])
+for SOURCE_REPO_ID in SOURCE_REPO_IDs:
+    old_dataset = LeRobotDataset(repo_id=SOURCE_REPO_ID)
+    FPS, ROBOT_TYPE = old_dataset.meta.fps, old_dataset.meta.robot_type
+    old_features = deepcopy(old_dataset.features)
 
-target_action_key = "action"
-target_state_key  = "observation.state"
+    source_action_key = get_source_key("action", action_info['type'])
+    source_state_key  = get_source_key("state", state_info['type'])
 
-if TARGET_REPO_ID is None:
-    TARGET_REPO_ID = f"{SOURCE_REPO_ID}_{'_'.join(TARGET_ACTION)}_action_{'_'.join(TARGET_STATE)}_state"
+    target_action_key = "action"
+    target_state_key  = "observation.state"
 
-# --------------------------
-# 坐标系转换矩阵（如果需要）
-# --------------------------
-T_cam = load_camera_T(SOURCE_REPO_ID) if (action_info['camera'] or state_info['camera']) else None
+    if TARGET_REPO_ID is None:
+        TARGET_REPO_ID = f"{SOURCE_REPO_ID}_{'_'.join(TARGET_ACTION)}_action_{'_'.join(TARGET_STATE)}_state"
 
-# --------------------------
-# 构建新 features
-# --------------------------
-new_features = deepcopy(old_features)
-for k in ["action", "joint_action", "observation.state", "observation.joint_state","observation.images.side_depth"
-        #   'timestamp', 'task_index', 'episode_index', 'index', 'frame_index'
-          ]:
-    if k in new_features:
-        new_features.pop(k)
-new_features[target_action_key] = old_features[source_action_key]
-new_features[target_state_key]  = old_features[source_state_key]
+    # --------------------------
+    # 坐标系转换矩阵（如果需要）
+    # --------------------------
+    T_cam = load_camera_T(SOURCE_REPO_ID) if (action_info['camera'] or state_info['camera']) else None
 
-# --------------------------
-# 创建新数据集
-# --------------------------
-new_dataset = LeRobotDataset.create(
-    repo_id=TARGET_REPO_ID,
-    features=new_features,
-    fps=FPS,
-    robot_type=ROBOT_TYPE,
-    use_videos=True,
-    image_writer_threads=1
-)
+    # --------------------------
+    # 构建新 features
+    # --------------------------
+    new_features = deepcopy(old_features)
+    for k in ["action", "joint_action", "observation.state", "observation.joint_state","observation.images.side_depth"
+            #   'timestamp', 'task_index', 'episode_index', 'index', 'frame_index'
+            ]:
+        if k in new_features:
+            new_features.pop(k)
+    new_features[target_action_key] = old_features[source_action_key]
+    new_features[target_state_key]  = old_features[source_state_key]
 
-# --------------------------
-# 拷贝数据并处理 camera / delta
-# --------------------------
-prev_action = None
-prev_state  = None
-prev_episode_index = None
-
-for idx, sample in enumerate(old_dataset):
-    new_sample = {}
-
-    # 拷贝其他字段（非 action/state）
-    for k, v in sample.items():
-        if k not in ["action", "joint_action", "observation.state", "observation.joint_state","observation.images.side_depth"
-                    #  'timestamp', 'task_index', 'episode_index', 'index', 'frame_index'
-                     ]:
-            new_sample[k] = v.permute(1,2,0) if k.startswith("observation.images") else v
-
-    # 转换 action/state
-    new_sample[target_action_key] = convert_frame(
-        sample[source_action_key],
-        T=T_cam if action_info['camera'] else None,
-        delta=action_info['delta'],
-        prev=prev_action
-    )
-    new_sample[target_state_key] = convert_frame(
-        sample[source_state_key],
-        T=T_cam if state_info['camera'] else None,
-        delta=state_info['delta'],
-        prev=prev_state
+    # --------------------------
+    # 创建新数据集
+    # --------------------------
+    new_dataset = LeRobotDataset.create(
+        repo_id=TARGET_REPO_ID,
+        features=new_features,
+        fps=FPS,
+        robot_type=ROBOT_TYPE,
+        use_videos=True,
+        image_writer_threads=1
     )
 
-    prev_action = new_sample[target_action_key].clone()
-    prev_state  = new_sample[target_state_key].clone()
+    # --------------------------
+    # 拷贝数据并处理 camera / delta
+    # --------------------------
+    prev_action = None
+    prev_state  = None
+    prev_episode_index = None
 
-    # 添加到新 dataset
-    new_dataset.add_frame(new_sample,use_origin_data=True)
+    for idx, sample in enumerate(old_dataset):
+        new_sample = {}
 
-    # 这一episode结束以后保存
-    current_episode_index = sample['episode_index']
+        # 拷贝其他字段（非 action/state）
+        for k, v in sample.items():
+            if k not in ["action", "joint_action", "observation.state", "observation.joint_state","observation.images.side_depth"
+                        #  'timestamp', 'task_index', 'episode_index', 'index', 'frame_index'
+                        ]:
+                new_sample[k] = v.permute(1,2,0) if k.startswith("observation.images") else v
 
-    if prev_episode_index is not None and current_episode_index != prev_episode_index:
+        # 转换 action/state
+        new_sample[target_action_key] = convert_frame(
+            sample[source_action_key],
+            T=T_cam if action_info['camera'] else None,
+            delta=action_info['delta'],
+            prev=prev_action
+        )
+        new_sample[target_state_key] = convert_frame(
+            sample[source_state_key],
+            T=T_cam if state_info['camera'] else None,
+            delta=state_info['delta'],
+            prev=prev_state
+        )
 
-        # 当前 episode 结束，保存数据
+        prev_action = new_sample[target_action_key].clone()
+        prev_state  = new_sample[target_state_key].clone()
+
+        # 添加到新 dataset
+        new_dataset.add_frame(new_sample,use_origin_data=True)
+
+        # 这一episode结束以后保存
+        current_episode_index = sample['episode_index']
+
+        if prev_episode_index is not None and current_episode_index != prev_episode_index:
+
+            # 当前 episode 结束，保存数据
+            new_dataset.save_episode()
+            print(f"保存了第{current_episode_index}集")
+            new_dataset.episode_buffer = None
+        # 更新上一个 episode_index
+        prev_episode_index = current_episode_index
+
+    # 保存剩余帧
+    if new_dataset.episode_buffer and new_dataset.episode_buffer["size"] > 0:
+        print("怎么还有没处理的")
         new_dataset.save_episode()
-        print(f"保存了第{current_episode_index}集")
         new_dataset.episode_buffer = None
-    # 更新上一个 episode_index
-    prev_episode_index = current_episode_index
 
-# 保存剩余帧
-if new_dataset.episode_buffer and new_dataset.episode_buffer["size"] > 0:
-    new_dataset.save_episode()
-    new_dataset.episode_buffer = None
-
-new_dataset.finalize()
-print(f"✅ 数据集转换完成: {TARGET_REPO_ID}")
+    new_dataset.finalize()
+    print(f"✅ 数据集转换完成: {TARGET_REPO_ID}")
